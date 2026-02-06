@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import numpy as np
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TimeElapsedColumn
 from tqdm import tqdm
@@ -49,7 +50,15 @@ class ProcessingConfig:
     # Detection
     stability_threshold: int = 5
     require_starting_position: bool = True
-    max_calibration_frames: int = 100
+    max_calibration_frames: int = 3000  # Search longer for markers
+    calibration_search_step: int = 30   # Check every Nth frame during calibration search
+
+    # Camera orientation (position relative to board from white's perspective)
+    # right: camera on white's right -> rotate 90° counter-clockwise
+    # left: camera on white's left -> rotate 90° clockwise
+    # top: camera behind black -> no rotation
+    # bottom: camera behind white -> rotate 180°
+    camera_orientation: str = "right"
 
     # Output
     save_visualization: bool = False
@@ -59,6 +68,14 @@ class ProcessingConfig:
 
 class VideoPipeline:
     """Process pre-recorded chess game videos."""
+
+    # Rotation mappings for camera orientations
+    ROTATION_MAP = {
+        "right": cv2.ROTATE_90_COUNTERCLOCKWISE,  # Camera on white's right
+        "left": cv2.ROTATE_90_CLOCKWISE,          # Camera on white's left
+        "top": None,                               # Camera behind black (standard)
+        "bottom": cv2.ROTATE_180,                  # Camera behind white
+    }
 
     def __init__(
         self,
@@ -87,6 +104,13 @@ class VideoPipeline:
         self.detected_moves: list[DetectedMove] = []
         self.validated_moves: list[chess.Move] = []
         self.invalid_moves: list[DetectedMove] = []
+
+    def _rotate_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Rotate frame based on camera orientation setting."""
+        rotation = self.ROTATION_MAP.get(self.config.camera_orientation)
+        if rotation is not None:
+            return cv2.rotate(frame, rotation)
+        return frame
 
     def process(
         self,
@@ -122,6 +146,21 @@ class VideoPipeline:
 
         # Reset state
         self._reset()
+
+        # Pre-scan for calibration - search for frame with all 4 markers
+        calibration_frame = self._find_calibration_frame(
+            cap, total_frames, self.config.max_calibration_frames
+        )
+        if calibration_frame is not None:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, calibration_frame)
+            ret, frame = cap.read()
+            if ret:
+                frame = self._rotate_frame(frame)
+                self.frame_processor.calibrate(frame)
+                console.print(f"[green]Calibrated from frame {calibration_frame}")
+
+        # Reset to start
+        cap.set(cv2.CAP_PROP_POS_FRAMES, self.config.start_frame)
 
         # Video writer for visualization
         viz_writer = None
@@ -166,6 +205,9 @@ class VideoPipeline:
                 # Skip frames if configured
                 if frame_idx % self.config.skip_frames != 0:
                     continue
+
+                # Rotate frame based on camera orientation
+                frame = self._rotate_frame(frame)
 
                 timestamp = frame_idx / fps if fps > 0 else 0.0
 
@@ -266,6 +308,61 @@ class VideoPipeline:
             self.pgn_generator.set_result(self.validator.get_game_result())
 
         return self.pgn_generator.to_pgn()
+
+    def _find_calibration_frame(
+        self, cap: cv2.VideoCapture, total_frames: int, max_search: int
+    ) -> Optional[int]:
+        """Search video for a frame with all 4 ArUco markers visible.
+
+        Args:
+            cap: Video capture object
+            total_frames: Total frames in video
+            max_search: Maximum frames to search
+
+        Returns:
+            Frame number with best calibration, or None if not found
+        """
+        from src.inference.aruco import ArUcoDetector
+
+        aruco = ArUcoDetector()
+        best_frame = None
+        best_count = 0
+
+        # Sample frames throughout the video
+        search_step = max(1, total_frames // min(max_search, total_frames))
+
+        console.print(f"[blue]Searching for ArUco markers (step={search_step})...")
+
+        for frame_num in range(0, min(total_frames, max_search * search_step), search_step):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Rotate frame based on camera orientation
+            frame = self._rotate_frame(frame)
+
+            corners = aruco.detect(frame)
+            if corners is not None:
+                count = sum([
+                    corners.top_left is not None,
+                    corners.top_right is not None,
+                    corners.bottom_right is not None,
+                    corners.bottom_left is not None,
+                ])
+
+                if count > best_count:
+                    best_count = count
+                    best_frame = frame_num
+
+                if corners.all_found:
+                    console.print(f"[green]Found all 4 markers at frame {frame_num}")
+                    return frame_num
+
+        if best_frame is not None:
+            console.print(f"[yellow]Best calibration: {best_count}/4 markers at frame {best_frame}")
+
+        return best_frame
 
     def _reset(self):
         """Reset pipeline state."""

@@ -33,6 +33,7 @@ def run_video(args):
         stability_threshold=args.stability,
         save_visualization=args.save_viz,
         visualization_path=args.viz_output,
+        camera_orientation=args.orientation,
     )
 
     # Create pipeline
@@ -190,6 +191,10 @@ def main():
     )
     video_parser.add_argument(
         "--viz-output", type=str, default=None, help="Visualization output path"
+    )
+    video_parser.add_argument(
+        "--orientation", type=str, default="right", choices=["right", "left", "top", "bottom"],
+        help="Camera position relative to board from white's perspective (default: right)"
     )
     video_parser.set_defaults(func=run_video)
 

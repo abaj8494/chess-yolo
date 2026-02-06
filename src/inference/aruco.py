@@ -63,11 +63,13 @@ class ArUcoDetector:
         self._last_corners: Optional[BoardCorners] = None
         self._smoothing_alpha = 0.3  # Exponential smoothing factor
 
-    def detect(self, frame: np.ndarray) -> Optional[BoardCorners]:
+    def detect(self, frame: np.ndarray, use_geometric_assignment: bool = True) -> Optional[BoardCorners]:
         """Detect board corners from ArUco markers in frame.
 
         Args:
             frame: BGR image
+            use_geometric_assignment: If True, assign corners based on position
+                                      rather than marker IDs (more robust)
 
         Returns:
             BoardCorners if at least 3 corners found, None otherwise
@@ -81,41 +83,54 @@ class ArUcoDetector:
         if ids is None or len(ids) == 0:
             return None
 
-        # Map detected markers to corners
-        detected_corners = {}
+        # Get centers of all detected markers
+        marker_centers = []
+        detected_ids = []
         for i, marker_id in enumerate(ids.flatten()):
             if marker_id in self.corner_marker_ids:
-                # Get center of marker
                 marker_corners = corners[i][0]
                 center = marker_corners.mean(axis=0)
+                marker_centers.append(center)
+                detected_ids.append(int(marker_id))
+
+        if len(marker_centers) < 3:
+            return None
+
+        marker_centers = np.array(marker_centers)
+
+        if use_geometric_assignment and len(marker_centers) >= 4:
+            # Sort corners geometrically: find top-left, top-right, bottom-right, bottom-left
+            # by their positions rather than marker IDs
+            all_corners = self._sort_corners_geometrically(marker_centers)
+            all_found = True
+        else:
+            # Fall back to ID-based assignment
+            detected_corners = {}
+            for center, marker_id in zip(marker_centers, detected_ids):
                 corner_idx = self.corner_marker_ids.index(marker_id)
                 detected_corners[corner_idx] = center
 
-        if len(detected_corners) < 3:
-            return None
+            all_corners = np.zeros((4, 2), dtype=np.float32)
+            found_indices = list(detected_corners.keys())
 
-        # Build corners array, extrapolating missing corner if needed
-        all_corners = np.zeros((4, 2), dtype=np.float32)
-        found_indices = list(detected_corners.keys())
+            for idx in range(4):
+                if idx in detected_corners:
+                    all_corners[idx] = detected_corners[idx]
 
-        for idx in range(4):
-            if idx in detected_corners:
-                all_corners[idx] = detected_corners[idx]
-
-        # Extrapolate missing corner if exactly 3 found
-        all_found = len(detected_corners) == 4
-        if len(detected_corners) == 3:
-            missing_idx = [i for i in range(4) if i not in detected_corners][0]
-            all_corners[missing_idx] = self._extrapolate_corner(
-                all_corners, found_indices, missing_idx
-            )
+            # Extrapolate missing corner if exactly 3 found
+            all_found = len(detected_corners) == 4
+            if len(detected_corners) == 3:
+                missing_idx = [i for i in range(4) if i not in detected_corners][0]
+                all_corners[missing_idx] = self._extrapolate_corner(
+                    all_corners, found_indices, missing_idx
+                )
 
         # Calculate confidence based on detection quality
-        confidence = len(detected_corners) / 4.0
+        confidence = len(marker_centers) / 4.0
 
         result = BoardCorners(
             corners=all_corners,
-            marker_ids=list(detected_corners.keys()),
+            marker_ids=detected_ids,
             confidence=confidence,
             all_found=all_found,
         )
@@ -126,6 +141,50 @@ class ArUcoDetector:
 
         self._last_corners = result
         return result
+
+    def _sort_corners_geometrically(self, points: np.ndarray) -> np.ndarray:
+        """Sort 4 corner points into order: top-left, top-right, bottom-right, bottom-left.
+
+        Args:
+            points: Nx2 array of corner points
+
+        Returns:
+            4x2 array with corners in correct order
+        """
+        # Find centroid
+        centroid = points.mean(axis=0)
+
+        # Calculate angle from centroid for each point
+        angles = np.arctan2(points[:, 1] - centroid[1], points[:, 0] - centroid[0])
+
+        # Sort by angle (counter-clockwise from right)
+        sorted_indices = np.argsort(angles)
+        sorted_points = points[sorted_indices]
+
+        # Now sorted_points is in counter-clockwise order starting from rightmost
+        # We need: top-left (0), top-right (1), bottom-right (2), bottom-left (3)
+
+        # Find top-left: smallest x + y sum
+        sums = sorted_points[:, 0] + sorted_points[:, 1]
+        top_left_idx = np.argmin(sums)
+
+        # Reorder starting from top-left, going clockwise
+        # The current order is counter-clockwise, so we reverse after top-left
+        n = len(sorted_points)
+        reordered = np.zeros((4, 2), dtype=np.float32)
+
+        # Top-left
+        reordered[0] = sorted_points[top_left_idx]
+
+        # Going clockwise: top-right, bottom-right, bottom-left
+        # Counter-clockwise from top-left would be: bottom-left, bottom-right, top-right
+        # So clockwise is the reverse: top-right, bottom-right, bottom-left
+        for i in range(1, 4):
+            # Go backwards in the sorted array (clockwise)
+            idx = (top_left_idx - i) % n
+            reordered[i] = sorted_points[idx]
+
+        return reordered
 
     def _extrapolate_corner(
         self,

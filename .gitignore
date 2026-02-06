@@ -62,3 +62,10 @@ Thumbs.db
 
 # ArUco markers (generated)
 aruco_markers/
+
+# Debug and output
+debug/
+video/
+output*.pgn
+output*.mp4
+models/*.pt
