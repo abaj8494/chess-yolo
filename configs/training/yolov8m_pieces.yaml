@@ -21,19 +21,22 @@ warmup_epochs: 3.0
 warmup_momentum: 0.8
 warmup_bias_lr: 0.1
 
-# Augmentation (additional to Albumentations pipeline)
-hsv_h: 0.015
-hsv_s: 0.7
-hsv_v: 0.4
-degrees: 10.0
-translate: 0.1
-scale: 0.5
-shear: 5.0
-perspective: 0.001
-flipud: 0.0
-fliplr: 0.5
-mosaic: 1.0
-mixup: 0.1
+# Augmentation - Heavy augmentation for robust detection
+# Critical for: wooden pieces, varied angles, different lighting
+hsv_h: 0.03          # More hue variation for wood tones
+hsv_s: 0.8           # High saturation variation
+hsv_v: 0.5           # More brightness variation for lighting
+degrees: 15.0        # More rotation for angled views
+translate: 0.15      # More translation
+scale: 0.6           # More scale variation
+shear: 10.0          # More shear for perspective
+perspective: 0.002   # Increased perspective transforms
+flipud: 0.0          # Don't flip vertically (preserves board orientation)
+fliplr: 0.5          # Horizontal flip OK
+mosaic: 1.0          # Full mosaic augmentation
+mixup: 0.15          # Slightly more mixup
+copy_paste: 0.1      # Add copy-paste augmentation
+erasing: 0.2         # Random erasing for occlusion robustness
 
 # Device
 device: 0

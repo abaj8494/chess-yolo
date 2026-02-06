@@ -56,10 +56,19 @@ if not api_key:
 
 rf = Roboflow(api_key=api_key)
 
-# Chess piece datasets to download
+# Chess piece datasets to download - multiple for robust training
+# Including varied piece styles, angles, and lighting conditions
 datasets = [
-    ("joseph-nelson", "chess-pieces-new", 1),
-    ("roboflow-100", "chess-pieces-mjzgj", 2),
+    # Main datasets with good variety
+    ("joseph-nelson", "chess-pieces-new", 1),           # ~292 images, varied angles
+    ("roboflow-100", "chess-pieces-mjzgj", 2),          # Roboflow 100 benchmark
+    ("block", "chess-pieces-wrdbb", 1),                 # ~628 images
+    ("fyp-pbsgo", "chess-piece-detection-fyp", 1),      # ~505 images
+    ("roboflow-jvuqo", "chess-pieces-zixng", 1),        # Additional variety
+    ("yolo-ja0zo", "chess-pieces-kaid5", 1),            # 2025 dataset
+    ("robotics-project-02zwj", "chess-piece-normal", 1), # Different piece styles
+    ("chess-lpnmj", "chess-piece-detection-7alyg", 1),  # More variety
+    ("chess-piece", "chess-pieces-pm2qa", 1),           # Additional images
 ]
 
 for workspace, project, version in datasets:

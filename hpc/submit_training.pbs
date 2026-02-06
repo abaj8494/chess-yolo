@@ -87,13 +87,14 @@ echo "Starting training..."
 echo "Experiments will be saved to: $SCRATCH_EXPERIMENTS"
 echo ""
 
+# Train with robust augmentation for varied piece styles (wooden, plastic, etc.)
 python scripts/train.py \
     --config configs/training/yolov8m_pieces.yaml \
     --data configs/data/chess_pieces.yaml \
-    --epochs 300 \
+    --epochs 400 \
     --batch-size 64 \
     --project "$SCRATCH_EXPERIMENTS" \
-    --name chess-pieces-v1 \
+    --name chess-pieces-v2-robust \
     --resume
 
 echo ""
@@ -101,4 +102,7 @@ echo "================================================"
 echo "Job completed: $(date)"
 echo "================================================"
 echo ""
-echo "Results saved to: $SCRATCH_EXPERIMENTS/chess-pieces-v1"
+echo "Results saved to: $SCRATCH_EXPERIMENTS/chess-pieces-v2-robust"
+echo ""
+echo "After training, copy best model to local:"
+echo "  scp \$USER@hpc:$SCRATCH_EXPERIMENTS/chess-pieces-v2-robust/weights/best.pt models/"

@@ -55,12 +55,14 @@ class ChessGUI:
         source: str = "0",
         orientation: str = "top",
         confidence: float = 0.5,
+        flip_board: bool = False,
         window_width: int = 1400,
         window_height: int = 800,
     ):
         self.source = source
         self.orientation = orientation
         self.confidence = confidence
+        self.flip_board = flip_board
         self.window_width = window_width
         self.window_height = window_height
 
@@ -87,6 +89,10 @@ class ChessGUI:
         from src.inference.detector import ChessPieceDetector
         from src.inference.aruco import ArUcoDetector
         from src.inference.perspective import PerspectiveCorrector
+        from src.inference.board_detector import SquareMapper
+        from src.inference.tracker import StateTracker
+        from src.chess_logic.move_detector import MoveDetector
+        from src.chess_logic.move_validator import MoveValidator
 
         self.detector = ChessPieceDetector(
             model_path=model_path,
@@ -94,6 +100,10 @@ class ChessGUI:
         )
         self.aruco = ArUcoDetector()
         self.perspective = PerspectiveCorrector((640, 640))
+        self.square_mapper = SquareMapper(640)
+        self.state_tracker = StateTracker(stability_threshold=3)
+        self.move_detector = MoveDetector()
+        self.validator = MoveValidator()
 
         print("Ready!")
 
@@ -192,9 +202,59 @@ class ChessGUI:
             # Warp to bird's eye view
             warped = self.perspective.warp_frame(frame)
 
+            # Flip horizontally if needed (corrects mirrored board)
+            if self.flip_board:
+                warped = cv2.flip(warped, 1)
+
             # Detect pieces
             detections = self.detector.detect(warped)
             self.state.pieces_detected = len(detections)
+
+            # Debug: show raw detection count
+            if self.state.frame_count % 60 == 0:
+                print(f"[Debug] Raw detections: {len(detections)}")
+                if detections:
+                    for d in detections[:5]:
+                        print(f"  - {d.class_name}: {d.confidence:.2f} at ({d.center[0]:.0f}, {d.center[1]:.0f})")
+
+            # Update state tracker
+            current_time = time.time()
+            board_state, state_changed = self.state_tracker.update(detections, current_time)
+
+            # Debug: show what we're detecting
+            if self.state.frame_count % 30 == 0:  # Every ~1 second
+                if board_state and board_state.squares:
+                    pieces_str = ", ".join([f"{sq}:{p[:2]}" for sq, p in list(board_state.squares.items())[:8]])
+                    print(f"[Debug] Pieces: {len(board_state.squares)} - {pieces_str}...")
+
+            # Detect moves when state changes
+            if state_changed and board_state:
+                print(f"[Debug] State changed! Pieces on board: {len(board_state.squares) if board_state.squares else 0}")
+
+                # Show previous vs current state for debugging
+                if self.move_detector.previous_state:
+                    prev_sq = set(self.move_detector.previous_state.squares.keys())
+                    curr_sq = set(board_state.squares.keys())
+                    disappeared = prev_sq - curr_sq
+                    appeared = curr_sq - prev_sq
+                    if disappeared or appeared:
+                        print(f"[Debug] Disappeared: {disappeared}, Appeared: {appeared}")
+
+                detected_move = self.move_detector.update(board_state)
+                if detected_move:
+                    print(f"[Debug] Detected move: {detected_move.from_square}->{detected_move.to_square} ({detected_move.piece})")
+                    # Validate move
+                    result = self.validator.validate(detected_move)
+                    print(f"[Debug] Validation result: valid={result.is_valid}, move={result.validated_move}")
+                    if result.is_valid and result.validated_move:
+                        move_san = self.validator.board.san(result.validated_move)
+                        self.validator.board.push(result.validated_move)
+                        self.state.moves.append(move_san)
+                        print(f"Move: {move_san}")
+                    else:
+                        print(f"[Debug] Move rejected: {result.error}")
+                else:
+                    print(f"[Debug] No move detected from state change")
 
             # Draw detections on warped frame
             viz = self.detector.draw_detections(warped, detections)
@@ -220,21 +280,57 @@ class ChessGUI:
 
             return frame
 
+    def _is_ip_webcam_url(self, source: str) -> bool:
+        """Check if source is an IP Webcam URL."""
+        return source.startswith("http://") and ":8080" in source
+
+    def _fetch_ip_webcam_frame(self, base_url: str) -> Optional[np.ndarray]:
+        """Fetch a single frame from IP Webcam using shot.jpg endpoint."""
+        import subprocess
+        try:
+            # Use shot.jpg endpoint which is more reliable
+            shot_url = base_url.rstrip('/').replace('/video', '').replace('/videofeed', '')
+            if not shot_url.endswith('/shot.jpg'):
+                shot_url = shot_url.rstrip('/') + '/shot.jpg'
+
+            # Use curl as workaround for Python networking issues
+            result = subprocess.run(
+                ['curl', '-s', '-m', '2', shot_url],
+                capture_output=True,
+                timeout=3
+            )
+            if result.returncode == 0 and len(result.stdout) > 1000:
+                img_array = np.asarray(bytearray(result.stdout), dtype=np.uint8)
+                frame = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                return frame
+            return None
+        except Exception as e:
+            return None
+
     def run(self):
         """Main GUI loop."""
-        # Open video source
-        if self.source.isdigit():
-            cap = cv2.VideoCapture(int(self.source))
-        else:
-            cap = cv2.VideoCapture(self.source)
+        use_ip_webcam = self._is_ip_webcam_url(self.source)
+        cap = None
 
-        if not cap.isOpened():
-            print(f"Error: Could not open video source: {self.source}")
-            print("\nFor IP Webcam app, make sure:")
-            print("  1. App is running and server started")
-            print("  2. Phone and computer are on same network")
-            print("  3. URL format: http://<phone-ip>:8080/video")
-            return
+        if use_ip_webcam:
+            # Test IP Webcam connection
+            print(f"Connecting to IP Webcam: {self.source}")
+            frame = self._fetch_ip_webcam_frame(self.source)
+            if frame is None:
+                print(f"Error: Could not connect to IP Webcam at {self.source}")
+                print("Make sure the app is running and server is started.")
+                return
+            print("IP Webcam connected!")
+        else:
+            # Open video source
+            if self.source.isdigit():
+                cap = cv2.VideoCapture(int(self.source))
+            else:
+                cap = cv2.VideoCapture(self.source)
+
+            if not cap.isOpened():
+                print(f"Error: Could not open video source: {self.source}")
+                return
 
         print(f"Connected to: {self.source}")
         print("Press 'q' to quit, 'r' to reset, 's' for screenshot")
@@ -243,11 +339,19 @@ class ChessGUI:
         cv2.resizeWindow("Chess Vision", self.window_width, self.window_height)
 
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to read frame, retrying...")
-                time.sleep(0.1)
-                continue
+            # Get frame from appropriate source
+            if use_ip_webcam:
+                frame = self._fetch_ip_webcam_frame(self.source)
+                if frame is None:
+                    print("Failed to fetch frame, retrying...")
+                    time.sleep(0.1)
+                    continue
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    print("Failed to read frame, retrying...")
+                    time.sleep(0.1)
+                    continue
 
             # Calculate FPS
             current_time = time.time()
@@ -289,14 +393,20 @@ class ChessGUI:
             if key == ord('q'):
                 break
             elif key == ord('r'):
+                from src.chess_logic.move_validator import MoveValidator
                 self.state = GUIState()
                 self.state.status = "Reset"
+                self.state_tracker.reset()
+                self.move_detector.reset()
+                self.validator = MoveValidator()  # Reset chess board
+                print("Reset!")
             elif key == ord('s'):
                 filename = f"screenshot_{int(time.time())}.png"
                 cv2.imwrite(filename, canvas)
                 print(f"Saved: {filename}")
 
-        cap.release()
+        if cap is not None:
+            cap.release()
         cv2.destroyAllWindows()
 
 
@@ -319,6 +429,10 @@ def main():
         "--confidence", "-c", type=float, default=0.5,
         help="Detection confidence threshold"
     )
+    parser.add_argument(
+        "--flip", "-f", action="store_true",
+        help="Flip board horizontally (if squares appear mirrored)"
+    )
 
     args = parser.parse_args()
 
@@ -327,6 +441,7 @@ def main():
         source=args.source,
         orientation=args.orientation,
         confidence=args.confidence,
+        flip_board=args.flip,
     )
     gui.run()
 
