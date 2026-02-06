@@ -22,13 +22,22 @@ class BoardCalibration:
 class PerspectiveCorrector:
     """Apply perspective correction to warp chessboard to bird's-eye view."""
 
-    def __init__(self, output_size: Tuple[int, int] = (640, 640)):
+    def __init__(
+        self,
+        output_size: Tuple[int, int] = (640, 640),
+        margin: int = 0,
+    ):
         """Initialize perspective corrector.
 
         Args:
             output_size: Size of warped output image (width, height)
+            margin: Inset margin in pixels (positive = grid inset from edges,
+                    negative = grid extends beyond edges). Use this to align
+                    the grid with the actual playing area when markers are
+                    placed at board corners but slightly outside the squares.
         """
         self.output_size = output_size
+        self.margin = margin
         self.calibration: Optional[BoardCalibration] = None
 
     def calibrate(self, corners: BoardCorners) -> BoardCalibration:

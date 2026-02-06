@@ -33,6 +33,15 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+from enum import Enum
+
+
+class CalibrationState(Enum):
+    WAITING = "waiting"      # Waiting for stable detection
+    SAMPLING = "sampling"    # Sampling colors
+    COMPLETE = "complete"    # Calibration done
+
+
 @dataclass
 class GUIState:
     """Track GUI state."""
@@ -40,10 +49,14 @@ class GUIState:
     current_fen: str = "startpos"
     fps: float = 0.0
     frame_count: int = 0
-    calibrated: bool = False
+    aruco_calibrated: bool = False  # ArUco markers found
+    color_calibrated: bool = False  # Piece colors calibrated
     pieces_detected: int = 0
+    white_pieces: int = 0
+    black_pieces: int = 0
     last_board_state: Optional[dict] = None
     status: str = "Initializing..."
+    calibration_state: str = "waiting"
 
 
 class ChessGUI:
@@ -91,19 +104,37 @@ class ChessGUI:
         from src.inference.perspective import PerspectiveCorrector
         from src.inference.board_detector import SquareMapper
         from src.inference.tracker import StateTracker
-        from src.chess_logic.move_detector import MoveDetector
-        from src.chess_logic.move_validator import MoveValidator
+        from src.inference.color_calibration import ColorCalibrator
+        from src.inference.detection_smoother import DetectionSmoother
+        from src.chess_logic.occupancy_move_detector import OccupancyMoveDetector
 
         self.detector = ChessPieceDetector(
             model_path=model_path,
             confidence_threshold=confidence,
         )
+
+        # Detection smoother for temporal filtering
+        # Use aggressive filtering due to noisy detection
+        self.detection_smoother = DetectionSmoother(
+            window_size=10,   # Look at last 10 frames
+            min_detections=7, # Need 7/10 detections to add square
+            min_empty=7,      # Need 7 empty frames to remove square
+        )
         self.aruco = ArUcoDetector()
         self.perspective = PerspectiveCorrector((640, 640))
         self.square_mapper = SquareMapper(640)
         self.state_tracker = StateTracker(stability_threshold=3)
-        self.move_detector = MoveDetector()
-        self.validator = MoveValidator()
+
+        # Color calibrator for white/black classification
+        self.color_calibrator = ColorCalibrator(board_size=640)
+        self.calibration_frames = 0
+        self.calibration_threshold = 10  # Frames needed for calibration
+
+        # Use occupancy-based detection (ignores piece classification)
+        self.occupancy_detector = OccupancyMoveDetector()
+
+        # Store warped frame for color sampling
+        self.last_warped_frame = None
 
         print("Ready!")
 
@@ -113,6 +144,61 @@ class ChessGUI:
         if rotation is not None:
             return cv2.rotate(frame, rotation)
         return frame
+
+    def _draw_detections_with_color(
+        self,
+        frame: np.ndarray,
+        detections,
+        board_state
+    ) -> np.ndarray:
+        """Draw detections with color-coded bounding boxes."""
+        viz = frame.copy()
+
+        if not detections:
+            return viz
+
+        detected_squares = set(board_state.squares.keys()) if board_state else set()
+
+        for det in detections:
+            x1, y1, x2, y2 = map(int, det.bbox)
+            cx, cy = det.center
+
+            # Get square for this detection
+            square = self.square_mapper.get_square(cx, cy)
+
+            # Determine color based on calibration
+            if self.state.color_calibrated and square in detected_squares:
+                piece_color = self.color_calibrator.classify_piece(
+                    self.last_warped_frame, square, flip_board=self.flip_board
+                )
+                if piece_color.value == "white":
+                    box_color = (255, 255, 255)  # White box for white pieces
+                    text_color = (0, 0, 0)
+                elif piece_color.value == "black":
+                    box_color = (50, 50, 50)  # Dark box for black pieces
+                    text_color = (255, 255, 255)
+                else:
+                    box_color = (0, 255, 255)  # Yellow for unknown
+                    text_color = (0, 0, 0)
+            else:
+                # Not calibrated yet - use detection's class
+                if "white" in det.class_name:
+                    box_color = (200, 200, 200)
+                elif "black" in det.class_name:
+                    box_color = (80, 80, 80)
+                else:
+                    box_color = (0, 255, 0)
+                text_color = (0, 255, 0)
+
+            # Draw bounding box
+            cv2.rectangle(viz, (x1, y1), (x2, y2), box_color, 2)
+
+            # Draw square label
+            label = f"{square}"
+            cv2.putText(viz, label, (x1, y1 - 5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, text_color, 1)
+
+        return viz
 
     def _draw_panel(self, height: int) -> np.ndarray:
         """Draw the info panel with moves and status."""
@@ -137,17 +223,31 @@ class ChessGUI:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, fps_color, 1)
         y += line_height
 
-        # Calibration status
-        cal_color = (0, 255, 0) if self.state.calibrated else (0, 0, 255)
-        cal_text = "Calibrated" if self.state.calibrated else "Looking for markers..."
-        cv2.putText(panel, cal_text, (20, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, cal_color, 1)
+        # ArUco calibration status
+        aruco_color = (0, 255, 0) if self.state.aruco_calibrated else (0, 0, 255)
+        aruco_text = "Board: OK" if self.state.aruco_calibrated else "Board: Looking..."
+        cv2.putText(panel, aruco_text, (20, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, aruco_color, 1)
         y += line_height
 
-        # Pieces detected
+        # Color calibration status
+        color_color = (0, 255, 0) if self.state.color_calibrated else (0, 255, 255)
+        color_text = "Colors: OK" if self.state.color_calibrated else f"Colors: {self.state.calibration_state}"
+        cv2.putText(panel, color_text, (20, y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_color, 1)
+        y += line_height
+
+        # Pieces detected with color breakdown
         cv2.putText(panel, f"Pieces: {self.state.pieces_detected}", (20, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        y += line_height + 10
+        y += line_height
+
+        if self.state.color_calibrated:
+            cv2.putText(panel, f"  White: {self.state.white_pieces}  Black: {self.state.black_pieces}", (20, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+            y += line_height
+
+        y += 5
 
         # Moves section
         cv2.line(panel, (10, y), (self.panel_width - 10, y), (60, 60, 60), 1)
@@ -181,7 +281,7 @@ class ChessGUI:
         cv2.putText(panel, "Controls:", (20, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
         y += line_height
-        cv2.putText(panel, "Q: Quit  R: Reset  S: Screenshot", (20, y),
+        cv2.putText(panel, "Q:Quit R:Reset L:Lock S:Save", (20, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1)
 
         return panel
@@ -196,9 +296,9 @@ class ChessGUI:
 
         if corners and corners.all_found:
             self.perspective.calibrate(corners)
-            self.state.calibrated = True
+            self.state.aruco_calibrated = True
 
-        if self.state.calibrated:
+        if self.state.aruco_calibrated:
             # Warp to bird's eye view
             warped = self.perspective.warp_frame(frame)
 
@@ -206,65 +306,112 @@ class ChessGUI:
             if self.flip_board:
                 warped = cv2.flip(warped, 1)
 
+            # Store for color sampling
+            self.last_warped_frame = warped.copy()
+
             # Detect pieces
             detections = self.detector.detect(warped)
             self.state.pieces_detected = len(detections)
-
-            # Debug: show raw detection count
-            if self.state.frame_count % 60 == 0:
-                print(f"[Debug] Raw detections: {len(detections)}")
-                if detections:
-                    for d in detections[:5]:
-                        print(f"  - {d.class_name}: {d.confidence:.2f} at ({d.center[0]:.0f}, {d.center[1]:.0f})")
 
             # Update state tracker
             current_time = time.time()
             board_state, state_changed = self.state_tracker.update(detections, current_time)
 
-            # Debug: show what we're detecting
-            if self.state.frame_count % 30 == 0:  # Every ~1 second
-                if board_state and board_state.squares:
-                    pieces_str = ", ".join([f"{sq}:{p[:2]}" for sq, p in list(board_state.squares.items())[:8]])
-                    print(f"[Debug] Pieces: {len(board_state.squares)} - {pieces_str}...")
+            # Get raw detected squares
+            raw_squares = set(board_state.squares.keys()) if board_state else set()
 
-            # Detect moves when state changes
-            if state_changed and board_state:
-                print(f"[Debug] State changed! Pieces on board: {len(board_state.squares) if board_state.squares else 0}")
+            # Apply temporal smoothing to filter noise
+            smoothed = self.detection_smoother.update(raw_squares)
+            detected_squares = smoothed.occupied
 
-                # Show previous vs current state for debugging
-                if self.move_detector.previous_state:
-                    prev_sq = set(self.move_detector.previous_state.squares.keys())
-                    curr_sq = set(board_state.squares.keys())
-                    disappeared = prev_sq - curr_sq
-                    appeared = curr_sq - prev_sq
-                    if disappeared or appeared:
-                        print(f"[Debug] Disappeared: {disappeared}, Appeared: {appeared}")
+            # Debug: show raw vs smoothed every 60 frames
+            if self.state.frame_count % 60 == 0:
+                stats = self.detection_smoother.get_stats()
+                print(f"[Smoother] Raw: {stats['raw_detected']}, Smoothed: {stats['smoothed_detected']}", flush=True)
 
-                detected_move = self.move_detector.update(board_state)
-                if detected_move:
-                    print(f"[Debug] Detected move: {detected_move.from_square}->{detected_move.to_square} ({detected_move.piece})")
-                    # Validate move
-                    result = self.validator.validate(detected_move)
-                    print(f"[Debug] Validation result: valid={result.is_valid}, move={result.validated_move}")
-                    if result.is_valid and result.validated_move:
-                        move_san = self.validator.board.san(result.validated_move)
-                        self.validator.board.push(result.validated_move)
-                        self.state.moves.append(move_san)
-                        print(f"Move: {move_san}")
-                    else:
-                        print(f"[Debug] Move rejected: {result.error}")
+            # Color calibration phase
+            if not self.state.color_calibrated:
+                self.state.status = "Calibrating colors..."
+                self.state.calibration_state = "sampling"
+
+                # Try to calibrate if we have enough pieces
+                if len(detected_squares) >= 20:  # Need most pieces visible
+                    self.calibration_frames += 1
+
+                    if self.calibration_frames >= self.calibration_threshold:
+                        cal = self.color_calibrator.calibrate(
+                            warped,
+                            detected_squares,
+                            flip_board=self.flip_board
+                        )
+                        if cal:
+                            self.state.color_calibrated = True
+                            self.state.calibration_state = "complete"
+                            self.state.status = "Ready - make your move"
+                            print(f"[GUI] Color calibration complete!")
+                            # Let occupancy detector initialize from actual detection
+                            # (more reliable than assuming 32-square starting position
+                            # when detection only sees 20-25 squares)
                 else:
-                    print(f"[Debug] No move detected from state change")
+                    self.calibration_frames = 0  # Reset if not enough pieces
 
-            # Draw detections on warped frame
-            viz = self.detector.draw_detections(warped, detections)
+                # Show calibration progress
+                if self.state.frame_count % 30 == 0:
+                    print(f"[Calibration] Pieces: {len(detected_squares)}, frames: {self.calibration_frames}/{self.calibration_threshold}")
+
+            # If calibrated, classify pieces by color and detect moves
+            if self.state.color_calibrated and board_state:
+                # Classify all pieces using calibrated colors
+                color_map = self.color_calibrator.classify_all_pieces(
+                    warped, detected_squares, flip_board=self.flip_board
+                )
+
+                # Count white/black pieces
+                self.state.white_pieces = sum(1 for c in color_map.values() if c.value == "white")
+                self.state.black_pieces = sum(1 for c in color_map.values() if c.value == "black")
+
+                # Debug: show classification
+                if self.state.frame_count % 60 == 0:
+                    print(f"[Color] White: {self.state.white_pieces}, Black: {self.state.black_pieces}")
+
+                # Create smoothed board state for occupancy detection
+                # Only include squares that passed temporal smoothing
+                from src.inference.board_detector import BoardState as BS
+                smoothed_board_state = BS(
+                    squares={sq: board_state.squares.get(sq, "piece")
+                             for sq in detected_squares if sq in board_state.squares},
+                    timestamp=board_state.timestamp,
+                    frame_number=board_state.frame_number,
+                )
+
+                # Detect moves using occupancy-based approach with smoothed state
+                detected_move = self.occupancy_detector.update(smoothed_board_state)
+                if detected_move:
+                    # Move was confirmed (passed stability threshold)
+                    move_san = detected_move.piece.split('-')[0][0].upper()
+                    # Get proper SAN from the board history
+                    if self.occupancy_detector.board.move_stack:
+                        last_move = self.occupancy_detector.board.peek()
+                        self.occupancy_detector.board.pop()
+                        move_san = self.occupancy_detector.board.san(last_move)
+                        self.occupancy_detector.board.push(last_move)
+                    self.state.moves.append(move_san)
+                    print(f"Move confirmed: {move_san}")
+
+            # Draw detections on warped frame (color-coded if calibrated)
+            viz = self._draw_detections_with_color(warped, detections, board_state)
 
             # Draw grid
             viz = self.perspective.draw_grid(viz, warped=True)
 
+            # Draw calibration status
+            if not self.state.color_calibrated:
+                cv2.putText(viz, f"Calibrating... ({self.calibration_frames}/{self.calibration_threshold})",
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
             return viz
         else:
-            # Not calibrated - show original with marker overlay
+            # Not ArUco calibrated - show original with marker overlay
             if corners:
                 frame = self.aruco.draw_markers(frame, corners)
 
@@ -393,13 +540,20 @@ class ChessGUI:
             if key == ord('q'):
                 break
             elif key == ord('r'):
-                from src.chess_logic.move_validator import MoveValidator
                 self.state = GUIState()
                 self.state.status = "Reset"
                 self.state_tracker.reset()
-                self.move_detector.reset()
-                self.validator = MoveValidator()  # Reset chess board
+                self.occupancy_detector.reset()
+                self.detection_smoother.reset()  # Reset smoother too
+                self.color_calibrator = type(self.color_calibrator)(board_size=640)
+                self.calibration_frames = 0
                 print("Reset!")
+            elif key == ord('l'):
+                # Lock/unlock baseline
+                if self.occupancy_detector.baseline_locked:
+                    self.occupancy_detector.unlock_baseline()
+                else:
+                    self.occupancy_detector.lock_baseline()
             elif key == ord('s'):
                 filename = f"screenshot_{int(time.time())}.png"
                 cv2.imwrite(filename, canvas)
@@ -426,8 +580,8 @@ def main():
         help="Camera orientation relative to board"
     )
     parser.add_argument(
-        "--confidence", "-c", type=float, default=0.5,
-        help="Detection confidence threshold"
+        "--confidence", "-c", type=float, default=0.25,
+        help="Detection confidence threshold (default: 0.25 for better recall)"
     )
     parser.add_argument(
         "--flip", "-f", action="store_true",
