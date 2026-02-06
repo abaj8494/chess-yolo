@@ -1,0 +1,49 @@
+# YOLOv8m Training Configuration for Chess Pieces
+# Optimized for NVIDIA H200 GPU
+
+# Model
+model: yolov8m.pt
+
+# Training parameters
+epochs: 300
+batch: 64
+imgsz: 640
+patience: 50
+save_period: 10
+
+# Optimizer
+optimizer: AdamW
+lr0: 0.001
+lrf: 0.01
+momentum: 0.937
+weight_decay: 0.0005
+warmup_epochs: 3.0
+warmup_momentum: 0.8
+warmup_bias_lr: 0.1
+
+# Augmentation (additional to Albumentations pipeline)
+hsv_h: 0.015
+hsv_s: 0.7
+hsv_v: 0.4
+degrees: 10.0
+translate: 0.1
+scale: 0.5
+shear: 5.0
+perspective: 0.001
+flipud: 0.0
+fliplr: 0.5
+mosaic: 1.0
+mixup: 0.1
+
+# Device
+device: 0
+workers: 16
+cache: disk
+amp: true
+deterministic: false
+
+# Logging
+project: experiments
+name: chess-pieces-v1
+exist_ok: true
+verbose: true
