@@ -52,7 +52,7 @@ I had none of these. Stacking multiple hard problems (angled perspective, variab
 
 ## HPC Training
 
-Trained on UNSW Katana HPC cluster with an NVIDIA H200 GPU (140GB VRAM). Two training runs were attempted.
+Trained on a HPC cluster with an NVIDIA H200 GPU (140GB VRAM). Two training runs were attempted.
 
 ### Training Setup
 
@@ -130,6 +130,72 @@ Press 'R' to set reference frame, then make moves. Watch them not get detected.
 2. Use proper lighting
 3. Get a faster video feed
 4. Or just buy a DGT board
+
+## If I Were To Try Again: Custom Training Data
+
+The real fix is collecting training data from your actual setup. Here's what that would look like.
+
+### Recording Games
+
+1. Set up camera in fixed position (doesn't have to be overhead)
+2. Play several complete games, maybe 10-20
+3. Record video of each game
+4. Write down the PGN as you play (or reconstruct after)
+
+The PGN helps with semi-automated annotation later - if you know what position should be on the board, you can project expected piece locations.
+
+### Annotation Approach
+
+You need bounding boxes, not PGN. For each frame:
+- Draw a rectangle around each piece (32 boxes for a full board)
+- Label each box: white-king, black-pawn, etc.
+
+Tools: CVAT, LabelImg, Roboflow's annotator.
+
+**Semi-automated approach:**
+1. Manually annotate the starting position once (32 boxes)
+2. For subsequent frames, track pieces that moved and only re-annotate those
+3. Or: if you have perspective correction working, project expected positions from PGN and verify/correct
+
+You'd want maybe 500-1000 annotated frames minimum. At 32 pieces per frame, that's 16,000-32,000 bounding boxes. Tedious but doable over a few sessions.
+
+### Do You Need ArUco Markers?
+
+For training: No. ArUco markers are only for finding board corners at inference time.
+
+For training data, you have options:
+- Record with camera fixed, manually mark corners once per video
+- Warp all frames to bird's-eye view before annotation
+- Or skip perspective correction entirely - train on raw angled images and let the model learn to handle it (harder, needs more data)
+
+If you record in a few different lighting conditions (morning, afternoon, lamp on/off) and from your actual camera position, the model would learn your specific setup.
+
+### Video Data Augmentation
+
+Video gives you natural variation for free:
+- Hands entering/leaving frame mid-move
+- Pieces at every square over the course of a game
+- Subtle lighting changes as you move around
+- Different game states (opening, middlegame, endgame density)
+
+Extract frames strategically:
+- Every N seconds, or
+- After each move stabilizes (hand leaves frame)
+- Include some "during move" frames with hand occlusion
+
+Then apply standard augmentations:
+- Brightness/contrast (simulates lighting variation)
+- Small rotations (simulates camera bump)
+- Noise (simulates camera quality)
+- Don't need heavy perspective augmentation if you're training on your actual viewpoint
+
+### The Tradeoff
+
+This is a lot of work. Maybe 10-20 hours of recording, annotation, and training.
+
+A DGT board costs $300 and works immediately.
+
+Sometimes the right engineering decision is to throw money at the problem.
 
 ## Time Spent
 
