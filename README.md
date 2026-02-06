@@ -50,6 +50,48 @@ The successful implementations I found online all have:
 
 I had none of these. Stacking multiple hard problems (angled perspective, variable lighting, low FPS, hand occlusion) doesn't work. Each one alone is solvable. All together, you just get frustrated.
 
+## HPC Training
+
+Trained on UNSW Katana HPC cluster with an NVIDIA H200 GPU (140GB VRAM). Two training runs were attempted.
+
+### Training Setup
+
+- **Model**: YOLOv8m (25.8M parameters)
+- **Dataset**: ~1800 training images, 228 validation images from Roboflow
+- **Classes**: 12 (white/black x king/queen/rook/bishop/knight/pawn)
+- **Batch size**: 64
+- **Image size**: 640x640
+- **Hardware**: NVIDIA H200, 6 CPUs, 128GB RAM
+- **Walltime requested**: 12 hours
+
+### Results
+
+The model converged quickly. Early stopping kicked in at epoch 138 (best model at epoch 88). Total training time: 18 minutes.
+
+```
+Final Metrics:
+  Precision:    0.775
+  Recall:       0.748
+  mAP50:        0.750
+  mAP50-95:     0.626
+```
+
+Per-class performance was reasonable:
+- Best: black-bishop (mAP50 0.791), black-queen (0.768)
+- Worst: black-pawn (mAP50 0.742), black-knight (0.741)
+
+### The Problem
+
+The metrics looked fine. 75% mAP50 seemed workable. But validation metrics don't tell the whole story.
+
+In practice, on live video:
+- Detection flickered constantly between frames
+- The same piece would be detected, then not, then detected again
+- Only 20-25 pieces visible at any given time instead of 32
+- Confidence scores were unstable
+
+The dataset was probably too clean. Studio lighting, overhead shots, consistent piece styles. My setup had none of that.
+
 ## Files
 
 ```
