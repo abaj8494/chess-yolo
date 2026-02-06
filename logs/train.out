@@ -1,0 +1,55 @@
+================================================
+Chess YOLO Training Job
+Job ID: 7466057.kman.restech.unsw.edu.au
+Node: k204
+Started: Fri Feb  6 11:30:37 AEDT 2026
+================================================
+Activating: /home/z5362216/.venvs/kits
+
+Cache directories (on scratch):
+  TORCH_HOME: /srv/scratch/z5362216/chess-yolo-cache/torch
+  YOLO_CONFIG_DIR: /srv/scratch/z5362216/chess-yolo-cache/yolo
+  Experiments: /srv/scratch/z5362216/chess-yolo-experiments
+
+GPU Information:
+name, memory.total [MiB], driver_version
+NVIDIA H200, 143771 MiB, 580.95.05
+
+PyTorch: 2.6.0+cu124
+CUDA available: True
+GPU: NVIDIA H200
+Memory: 140.1 GB
+
+Working directory: /home/z5362216/chess-yolo
+
+Starting training...
+Experiments will be saved to: /srv/scratch/z5362216/chess-yolo-experiments
+
+python: can't open file '/home/z5362216/chess-yolo/scripts/train.py': [Errno 2] No such file or directory
+
+================================================================================
+                     Resource Usage on 06/02/2026 11:30:52                      
+
+Job Id: 7466057 
+Queue: GENERAL
+Walltime: 00:00:13  (requested 12:00:00)
+Job unsucesfull. Exit Status 2 - Exit status refers to the exit value of the
+top process in the job, typically the shell.
+This may be the exit value of the last command executed in the shell.
+See job output error.
+
+--------------------------------------------------------------------------------
+|              |             GPUs              |            Memory             |
+--------------------------------------------------------------------------------
+| Node  GPU ID | Requested   Used   Efficiency | Available   Used              |
+| k204    7    |     1        0.0       0%     |143771 MiB   0.0B              |
+--------------------------------------------------------------------------------
+|Total         |     1        0.0      0.0%    |                               |
+--------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+|              |             CPUs              |            Memory             |
+--------------------------------------------------------------------------------
+| Node         | Requested   Used   Efficiency | Requested   Used   Efficiency |
+| k204         |     6       0.15      3.0%    |  128.0gb   0.36gb     0.3%    |
+--------------------------------------------------------------------------------
