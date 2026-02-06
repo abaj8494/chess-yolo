@@ -4,7 +4,6 @@
 #PBS -e logs/train.err
 #PBS -l walltime=12:00:00
 #PBS -l select=1:ncpus=6:ngpus=1:mem=128gb
-#PBS -l jobfs=10gb
 #PBS -j oe
 
 # Chess YOLO Training Script for HPC (PBS/Torque)
