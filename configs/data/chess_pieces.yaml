@@ -1,0 +1,23 @@
+# Chess Pieces Dataset Configuration for YOLOv8
+# Data stored on scratch: /srv/scratch/z5362216/chess-yolo-data
+
+path: /srv/scratch/z5362216/chess-yolo-data/splits
+train: train/images
+val: val/images
+test: test/images
+
+names:
+  0: white-king
+  1: white-queen
+  2: white-rook
+  3: white-bishop
+  4: white-knight
+  5: white-pawn
+  6: black-king
+  7: black-queen
+  8: black-rook
+  9: black-bishop
+  10: black-knight
+  11: black-pawn
+
+nc: 12
